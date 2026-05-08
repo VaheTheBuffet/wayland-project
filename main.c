@@ -12,13 +12,13 @@
 #include <xkbcommon/xkbcommon.h>
 #include "protocols/xdg_shell-client-protocol.h"
 #include "draw.h"
+#include "game.h"
 
-#define WIDTH 1920
-#define HEIGHT 1080
+#define WIDTH 800
+#define HEIGHT 600
 #define STRIDE (WIDTH * 4)
 #define SHM_POOL_SIZE (HEIGHT * STRIDE)
-#define FPS 60.0f
-#define SPEED 1000
+#define FPS 5.0f
 
 static void draw_frame();
 static void update();
@@ -38,10 +38,10 @@ static struct wl_pointer *mouse;
 static struct xkb_state *key_state;
 
 static int current_time;
-static float x;
-static float y;
 static bool should_draw;
 static context ctx;
+
+static Game *GAME;
 
 static bool KEYSTATE[256];
 
@@ -111,7 +111,7 @@ static void name(void *data, struct wl_seat *seat, const char* name)
     //Nothing needed here
 }
 
-static struct wl_seat_listener seat_listener = {
+static const struct wl_seat_listener seat_listener = {
     .capabilities = capability,
     .name = name,
 };
@@ -169,7 +169,7 @@ static void key_repeat_info(void *data, struct wl_keyboard *keyboard, int32_t ra
 
 }
 
-static struct wl_keyboard_listener keyboard_listener = {
+static const struct wl_keyboard_listener keyboard_listener = {
     .keymap = keymap,
     .enter = key_enter,
     .leave = key_leave,
@@ -226,8 +226,34 @@ static void draw_frame()
     //clear screen
     fill_rec(ctx, 0.0f, 0.0f, WIDTH, HEIGHT, 0xFFAAAAAA);
 
-    //draw scene
-    fill_rec(ctx, x, y, 100.0f, 100.0f, 0xFFAABB00);
+    //draw snake
+    for(int segment = 0; segment < GAME->snake_len; segment++) {
+        fill_rec(
+            ctx, 
+            GAME->snake[segment].x * WIDTH / GAME->board_width, 
+            GAME->snake[segment].y * HEIGHT / GAME->board_height, 
+            WIDTH / GAME->board_width, 
+            HEIGHT / GAME->board_height,
+            0xFFAABBCC
+        );
+    }
+
+    //draw apples
+    for(int apple = 0; apple < sizeof(GAME->apples) / sizeof(GAME->apples[0]); apple++) {
+        if(IVEC2_NULL(GAME->apples[apple])) {
+            continue;
+        }
+
+        fill_rec(
+            ctx,
+            GAME->apples[apple].x * WIDTH / GAME->board_width,
+            GAME->apples[apple].y * HEIGHT / GAME->board_height,
+            WIDTH / GAME->board_width,
+            HEIGHT / GAME->board_height,
+            0xFF0000FF
+        );
+    }
+
 
     wl_surface_attach(surface, buffer, 0, 0);
     wl_surface_damage(surface, 0, 0, WIDTH, HEIGHT);
@@ -239,18 +265,7 @@ static void draw_frame()
 
 static void update() 
 {
-    if (KEYSTATE[XKB_KEY_w]) {
-        y -= SPEED / FPS;
-    }
-    if (KEYSTATE[XKB_KEY_a]) {
-        x -= SPEED / FPS;
-    }
-    if (KEYSTATE[XKB_KEY_s]) {
-        y += SPEED / FPS;
-    }
-    if (KEYSTATE[XKB_KEY_d]) {
-        x += SPEED / FPS;
-    }
+    Game_update(GAME);
 }
 
 static void xdg_surface_handle_configure(void *data, struct xdg_surface *xdg_surface, uint32_t serial) {
@@ -271,7 +286,6 @@ int main(int argc, char *argv[])
 	wl_display_roundtrip(display);
 
     surface = wl_compositor_create_surface(compositor);
-
 
     fd = allocate_shm_file(SHM_POOL_SIZE);
     pool_data = mmap(NULL, SHM_POOL_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -294,13 +308,17 @@ int main(int argc, char *argv[])
 
     xdg_surface = xdg_wm_base_get_xdg_surface(xdg_wm_base, surface);
     xdg_surface_add_listener(xdg_surface, &xdg_surface_listener, NULL);
+    xdg_surface_set_window_geometry(xdg_surface, 0, 0, WIDTH, HEIGHT);
+
     toplevel = xdg_surface_get_toplevel(xdg_surface);
-    xdg_toplevel_set_title(toplevel, "Wayland Window");
+    xdg_toplevel_set_title(toplevel, "Snake Game");
+
+    wl_display_roundtrip(display);
 
     ctx = create_ctx(pixels, WIDTH, HEIGHT);
 
     wl_surface_attach(surface, buffer, 0, 0);
-    wl_surface_damage(surface, 0, 0, UINT32_MAX, UINT32_MAX);
+    wl_surface_damage(surface, 0, 0, WIDTH, HEIGHT);
     wl_surface_commit(surface);
 
     struct timespec ts;
@@ -309,8 +327,9 @@ int main(int argc, char *argv[])
     double last_time = (ts.tv_nsec / 1e6) + ts.tv_sec * 1e3;
 
     struct pollfd fd = { wl_display_get_fd(display), POLLIN, 0 };
+    GAME = Game_init(KEYSTATE);
 
-    while (true) {
+    while (GAME->running) {
         wl_display_flush(display);
         while (wl_display_prepare_read(display) != 0) {
             wl_display_dispatch_pending(display);
@@ -328,10 +347,16 @@ int main(int argc, char *argv[])
         clock_gettime(CLOCK_MONOTONIC, &ts);
         double now = (ts.tv_nsec / 1e6) + ts.tv_sec * 1e3;
 
+        update_direction(GAME);
+
         if (now - last_time > 1000 / FPS && should_draw) {
 
             //GAME LOOP
             update();
+
+            if(!GAME->running)
+                break;
+
             draw_frame();
 
             last_time = now;
