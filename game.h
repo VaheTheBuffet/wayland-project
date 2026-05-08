@@ -1,6 +1,7 @@
 #ifndef GAME_H
 #define GAME_H
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef enum Direction {
     UP, DOWN, RIGHT, LEFT
